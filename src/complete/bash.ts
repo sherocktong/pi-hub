@@ -1,3 +1,5 @@
+import { PI_PROVIDERS } from "../types.js";
+
 export const BASH_COMPLETION = `_pi-hub_profile_names() {
   local profiles_file="\${PI_HUB_PROFILES_FILE:-\$HOME/.pi/profiles.json}"
   if [[ -f "$profiles_file" ]]; then
@@ -46,6 +48,7 @@ _pi-hub() {
 
   local profile_subcmds="add update list view remove rename default"
   local thinking_levels="off minimal low medium high xhigh max"
+  local providers="${PI_PROVIDERS.join(" ")}"
 
   # Top-level command
   if [[ \${COMP_CWORD} -eq 1 ]]; then
@@ -72,6 +75,8 @@ _pi-hub() {
       elif [[ "\${COMP_WORDS[2]}" == "update" ]]; then
         if [[ "$prev" == "--thinking" ]]; then
           COMPREPLY=($(compgen -W "$thinking_levels" -- "$cur"))
+        elif [[ "$prev" == "--provider" || "$prev" == "-p" ]]; then
+          COMPREPLY=($(compgen -W "$providers" -- "$cur"))
         elif [[ "$prev" == "--model" || "$prev" == "-m" || "$prev" == "--delete-model" || "$prev" == "-d" ]]; then
           _pi-hub_models_for_profile "\${COMP_WORDS[3]}"
         else
@@ -81,6 +86,8 @@ _pi-hub() {
       elif [[ "\${COMP_WORDS[2]}" == "add" && \${COMP_CWORD} -gt 3 ]]; then
         if [[ "$prev" == "--thinking" ]]; then
           COMPREPLY=($(compgen -W "$thinking_levels" -- "$cur"))
+        elif [[ "$prev" == "--provider" || "$prev" == "-p" ]]; then
+          COMPREPLY=($(compgen -W "$providers" -- "$cur"))
         else
           local add_opts="--model -m --token -t --url -u --provider -p --thinking"
           COMPREPLY=($(compgen -W "$add_opts" -- "$cur"))

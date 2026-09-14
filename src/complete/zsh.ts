@@ -1,3 +1,5 @@
+import { PI_PROVIDERS } from "../types.js";
+
 export const ZSH_COMPLETION = `#compdef pi-hub
 
 _pi-hub() {
@@ -63,6 +65,21 @@ _pi-hub() {
             if (( CURRENT == 3 )); then
               _pi_hub_profiles
             fi
+          elif [[ $words[2] == "add" ]]; then
+            if (( CURRENT == 3 )); then
+              # profile name is free text; nothing to complete
+              return 1
+            else
+              words=("stub" $words[3,-1])
+              (( CURRENT-- ))
+              _arguments -C -S \\
+                '1:profile:' \\
+                '(-m --model)*'{-m,--model}'[Model ID]:model:' \\
+                '(-t --token)'{-t,--token}'[API key / token]:token:' \\
+                '(-u --url)'{-u,--url}'[Base URL]:url:' \\
+                '(-p --provider)'{-p,--provider}'[pi provider id]:provider:(${PI_PROVIDERS.join(" ")})' \\
+                '--thinking[Thinking level]:level:(off minimal low medium high xhigh max)'
+            fi
           elif [[ $words[2] == "update" ]]; then
             if (( CURRENT == 3 )); then
               _pi_hub_profiles
@@ -75,7 +92,7 @@ _pi-hub() {
                 '(-d --delete-model)*'{-d,--delete-model}'[Remove model ID]:model:->profileModel' \\
                 '(-t --token)'{-t,--token}'[API key / token]:token:' \\
                 '(-u --url)'{-u,--url}'[Base URL]:url:' \\
-                '(-p --provider)'{-p,--provider}'[pi provider id]:provider:' \\
+                '(-p --provider)'{-p,--provider}'[pi provider id]:provider:(${PI_PROVIDERS.join(" ")})' \\
                 '--thinking[Thinking level]:level:(off minimal low medium high xhigh max)'
               case $state in
                 profileModel)

@@ -1,0 +1,181 @@
+import fs from "node:fs";
+import path from "node:path";
+import {
+  AGENT_DIR,
+  AGENT_SETTINGS_FILE,
+  PI_SETTINGS_FILE,
+  PROFILE_DIRS_DIR,
+  readJson,
+  writeJson,
+} from "../config.js";
+import type { AgentSettingsData, AuthData, ModelsFileData, Profile } from "../types.js";
+import * as logger from "../logger.js";
+
+// Directories/files shared from the source agent dir into every profile dir.
+// Dirs are symlinked so user edits (extensions, skills, sessions) stay live.
+const SHARED_DIR_LINKS = ["extensions", "skills", "npm", "sessions"];
+const SHARED_FILE_LINKS = ["AGENTS.md", "models-store.json"];
+
+export function profileDirFor(name: string): string {
+  return path.join(PROFILE_DIRS_DIR, name);
+}
+
+function readSourceSettings(): AgentSettingsData {
+  return fs.existsSync(AGENT_SETTINGS_FILE)
+    ? readJson<AgentSettingsData>(AGENT_SETTINGS_FILE)
+    : {};
+}
+
+/**
+ * Provider used to key auth.json / models.json when the profile has no explicit
+ * provider: profile.provider, then a "provider/model" id prefix, then the
+ * user's defaultProvider from their agent settings.
+ */
+export function resolveEffectiveProvider(profile: Profile, settings: AgentSettingsData): string | undefined {
+  if (profile.provider) return profile.provider;
+  const models = profile.models || (profile.model ? [profile.model] : []);
+  const first = models[0];
+  if (first && first.includes("/")) return first.split("/")[0];
+  return settings.defaultProvider;
+}
+
+/**
+ * Write <dir>/auth.json with the profile's api_key entry (mode 0600).
+ * Other providers' entries already in the file are preserved so a profile dir
+ * keeps working if the user hand-edits it. Removed when the profile has no token.
+ */
+export function writeAuthFile(dir: string, profile: Profile): void {
+  const file = path.join(dir, "auth.json");
+  if (!profile.token) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  const provider = resolveEffectiveProvider(profile, readSourceSettings());
+  if (!provider) {
+    console.error(
+      "Warning: profile has a token but no provider could be determined " +
+        "(no -p flag, no provider/model id, no defaultProvider in agent settings). " +
+        "auth.json was not written; pi will not find this token."
+    );
+    return;
+  }
+  const auth: AuthData = fs.existsSync(file) ? readJson<AuthData>(file) : {};
+  auth[provider] = { type: "api_key", key: profile.token };
+  fs.writeFileSync(file, JSON.stringify(auth, null, 2) + "\n", { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+  logger.debug(`writeAuthFile: wrote ${file}`);
+}
+
+/**
+ * Write <dir>/settings.json: copy of the source agent settings with
+ * defaultProvider/defaultModel/defaultThinkingLevel overridden by the profile.
+ */
+export function writeSettingsFile(dir: string, profile: Profile): void {
+  const settings = readSourceSettings();
+  const models = profile.models || (profile.model ? [profile.model] : []);
+
+  if (profile.provider) settings.defaultProvider = profile.provider;
+  if (models[0]) settings.defaultModel = models[0];
+  if (profile.thinking) settings.defaultThinkingLevel = profile.thinking;
+
+  // Insurance: if the outer ~/.pi/settings.json defines skills and the agent
+  // settings don't, carry it over (PI_CODING_AGENT_DIR isolation may hide it).
+  if (settings.skills === undefined && fs.existsSync(PI_SETTINGS_FILE)) {
+    const outer = readJson<AgentSettingsData>(PI_SETTINGS_FILE);
+    if (outer.skills !== undefined) {
+      settings.skills = outer.skills;
+    }
+  }
+
+  writeJson(path.join(dir, "settings.json"), settings);
+  logger.debug(`writeSettingsFile: wrote ${path.join(dir, "settings.json")}`);
+}
+
+/**
+ * Write <dir>/models.json overriding the profile provider's baseUrl.
+ * pi reads this even for built-in providers and reloads it live — the only way
+ * to redirect providers (e.g. kimi-coding) that have no *_BASE_URL env var.
+ * Deleted when the profile has no url.
+ */
+export function writeModelsFile(dir: string, profile: Profile): void {
+  const file = path.join(dir, "models.json");
+  if (!profile.url) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  const provider = resolveEffectiveProvider(profile, readSourceSettings());
+  if (!provider) {
+    console.error(
+      "Warning: profile has a url but no provider could be determined " +
+        "(no -p flag, no provider/model id, no defaultProvider in agent settings). " +
+        "models.json baseUrl override was not written."
+    );
+    return;
+  }
+  const data: ModelsFileData = { providers: { [provider]: { baseUrl: profile.url } } };
+  writeJson(file, data);
+  logger.debug(`writeModelsFile: wrote ${file}`);
+}
+
+function removeStaleLink(linkPath: string): void {
+  try {
+    const stat = fs.lstatSync(linkPath);
+    if (stat.isSymbolicLink() || stat.isFile()) {
+      fs.rmSync(linkPath, { force: true });
+    } else if (stat.isDirectory()) {
+      // Leftover from a copy fallback on a previous run — leave real data alone
+      logger.debug(`refreshSharedLinks: ${linkPath} is a real directory, leaving as-is`);
+    }
+  } catch {
+    // does not exist
+  }
+}
+
+function linkOrCopy(target: string, linkPath: string, isDir: boolean): void {
+  removeStaleLink(linkPath);
+  if (!fs.existsSync(target)) return; // nothing to share
+  try {
+    fs.symlinkSync(target, linkPath, isDir ? "junction" : "file");
+  } catch (err) {
+    logger.warn(`Symlink failed for ${target}, falling back to copy`, err);
+    if (isDir) {
+      fs.cpSync(target, linkPath, { recursive: true });
+    } else {
+      fs.copyFileSync(target, linkPath);
+    }
+  }
+}
+
+/** (Re)create symlinks from a profile dir into the source agent dir. */
+export function refreshSharedLinks(dir: string): void {
+  for (const name of SHARED_DIR_LINKS) {
+    linkOrCopy(path.join(AGENT_DIR, name), path.join(dir, name), true);
+  }
+  for (const name of SHARED_FILE_LINKS) {
+    linkOrCopy(path.join(AGENT_DIR, name), path.join(dir, name), false);
+  }
+}
+
+/**
+ * Materialize (or refresh) the isolated agent dir for a profile and return its path.
+ * Idempotent; called on every `pi-hub run` so it tracks the user's current
+ * settings, auth, extensions, skills and sessions.
+ */
+export function materializeProfile(name: string, profile: Profile): string {
+  const dir = profileDirFor(name);
+  fs.mkdirSync(dir, { recursive: true });
+  writeAuthFile(dir, profile);
+  writeSettingsFile(dir, profile);
+  writeModelsFile(dir, profile);
+  refreshSharedLinks(dir);
+  return dir;
+}
+
+/** Delete a profile's materialized dir. Symlinks are unlinked, never followed. */
+export function removeProfileDir(name: string): void {
+  const dir = profileDirFor(name);
+  if (fs.existsSync(dir)) {
+    fs.rmSync(dir, { recursive: true, force: true });
+    logger.debug(`removeProfileDir: removed ${dir}`);
+  }
+}

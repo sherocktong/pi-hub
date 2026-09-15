@@ -68,15 +68,41 @@ export function writeAuthFile(dir: string, profile: Profile): void {
 
 /**
  * Write <dir>/settings.json: copy of the source agent settings with
- * defaultProvider/defaultModel/defaultThinkingLevel overridden by the profile.
+ * profile.settings overrides merged in and defaultProvider/defaultModel/
+ * defaultThinkingLevel overridden by the profile's dedicated fields
+ * (which win for their own keys). A null value in profile.settings deletes
+ * the key, so a profile can drop a setting inherited from the agent settings.
+ *
+ * Keys pi manages at runtime (theme, changelog marker, ...) are taken from
+ * the profile dir's existing settings.json instead of the source copy — pi
+ * persists them into the active agent dir, which under a profile is the
+ * profile dir, and regenerating purely from the source would wipe that state
+ * on every run. All other keys (including `packages`) keep tracking the
+ * source so edits there still propagate.
  */
+// Keys pi's SettingsManager persists into the active agent dir at runtime.
+// Keep these from the profile's own settings.json across re-materializations.
+const PI_RUNTIME_KEYS = new Set([
+  "lastChangelogVersion",
+  "theme",
+  "modelThinkingLevels",
+  "steeringMode",
+  "followUpMode",
+  "transport",
+  "httpIdleTimeoutMs",
+  "hideThinkingBlock",
+  "showCacheMissNotices",
+  "shellPath",
+  "quietStartup",
+  "defaultProjectTrust",
+  "shellCommandPrefix",
+  "npmCommand",
+  "collapseChangelog",
+  "enableInstallTelemetry",
+]);
+
 export function writeSettingsFile(dir: string, profile: Profile): void {
   const settings = readSourceSettings();
-  const models = profile.models || (profile.model ? [profile.model] : []);
-
-  if (profile.provider) settings.defaultProvider = profile.provider;
-  if (models[0]) settings.defaultModel = models[0];
-  if (profile.thinking) settings.defaultThinkingLevel = profile.thinking;
 
   // Insurance: if the outer ~/.pi/settings.json defines skills and the agent
   // settings don't, carry it over (PI_CODING_AGENT_DIR isolation may hide it).
@@ -86,6 +112,37 @@ export function writeSettingsFile(dir: string, profile: Profile): void {
       settings.skills = outer.skills;
     }
   }
+
+  // Keep per-profile runtime state pi wrote during previous sessions.
+  const profileSettingsFile = path.join(dir, "settings.json");
+  if (fs.existsSync(profileSettingsFile)) {
+    try {
+      const existing = readJson<AgentSettingsData>(profileSettingsFile);
+      for (const key of PI_RUNTIME_KEYS) {
+        if (existing[key] !== undefined) {
+          settings[key] = existing[key];
+        }
+      }
+      logger.debug(`writeSettingsFile: preserved pi runtime keys from ${profileSettingsFile}`);
+    } catch (err) {
+      logger.warn(`writeSettingsFile: could not read existing ${profileSettingsFile}, regenerating`, err);
+    }
+  }
+
+  if (profile.settings) {
+    for (const [key, value] of Object.entries(profile.settings)) {
+      if (value === null) {
+        delete settings[key];
+      } else {
+        settings[key] = value;
+      }
+    }
+  }
+
+  const models = profile.models || (profile.model ? [profile.model] : []);
+  if (profile.provider) settings.defaultProvider = profile.provider;
+  if (models[0]) settings.defaultModel = models[0];
+  if (profile.thinking) settings.defaultThinkingLevel = profile.thinking;
 
   writeJson(path.join(dir, "settings.json"), settings);
   logger.debug(`writeSettingsFile: wrote ${path.join(dir, "settings.json")}`);

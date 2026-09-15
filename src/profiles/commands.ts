@@ -10,7 +10,7 @@ import {
 import type { ProfilesData, Profile } from "../types.js";
 import { PI_PROVIDERS, THINKING_LEVELS } from "../types.js";
 import { BUILT_IN_DEFAULT, execPi, execPiBuiltIn, resolvePiBinary } from "./runner.js";
-import { profileDirFor, removeProfileDir } from "./materializer.js";
+import { profileDirFor, materializeProfile, removeProfileDir } from "./materializer.js";
 import { safeAction } from "../logger.js";
 import * as logger from "../logger.js";
 
@@ -61,15 +61,30 @@ function warnMissingProvider(p: Profile): void {
  * Returns the models (of the given list) that pi's catalog does not know.
  * Unknown models fail at request time with a confusing auth error, so warn early.
  * Returns an empty list (silently) when the pi binary can't be queried.
+ *
+ * The catalog pi reports depends on the agent dir it runs against: without a
+ * profile dir it only lists the default provider's models, which would
+ * false-positive flag every other provider's models. So when a profile name
+ * is given, point PI_CODING_AGENT_DIR at the profile's materialized dir (or
+ * strip an inherited PI_CODING_AGENT_DIR if the dir doesn't exist yet).
  */
-export function findUnknownModels(models: string[]): string[] {
+export function findUnknownModels(models: string[], profileName?: string): string[] {
   let binary: string;
   try {
     binary = resolvePiBinary();
   } catch {
     return [];
   }
-  const result = spawnSync(binary, ["--list-models"], { encoding: "utf-8" });
+  const env = { ...process.env };
+  if (profileName) {
+    const dir = profileDirFor(profileName);
+    if (fs.existsSync(dir)) {
+      env.PI_CODING_AGENT_DIR = dir;
+    } else {
+      delete env.PI_CODING_AGENT_DIR;
+    }
+  }
+  const result = spawnSync(binary, ["--list-models"], { encoding: "utf-8", env });
   if (result.status !== 0 || !result.stdout) {
     return [];
   }
@@ -84,8 +99,8 @@ export function findUnknownModels(models: string[]): string[] {
   return models.filter(m => m && !known.has(m));
 }
 
-function warnUnknownModels(models: string[]): void {
-  const unknown = findUnknownModels(models);
+function warnUnknownModels(models: string[], profileName?: string): void {
+  const unknown = findUnknownModels(models, profileName);
   if (unknown.length > 0) {
     console.error(
       `Warning: ${unknown.length === 1 ? "model" : "models"} not in pi's catalog: ${unknown.join(", ")}. ` +
@@ -101,6 +116,40 @@ interface ProfileOptions {
   url?: string;
   provider?: string;
   thinking?: string;
+  set?: string[];
+  unset?: string[];
+}
+
+/** Parse a key=value string into a JSON value when possible (numbers, booleans,
+ * null, objects, arrays, quoted strings), falling back to the raw string. */
+function parseSetValue(raw: string): unknown {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function applySetOption(p: Profile, kv: string): void {
+  const idx = kv.indexOf("=");
+  if (idx === -1) {
+    throw new Error(`Error: --set expects key=value, got '${kv}'.`);
+  }
+  const key = kv.slice(0, idx).trim();
+  if (!key) {
+    throw new Error(`Error: --set expects a non-empty key, got '${kv}'.`);
+  }
+  p.settings = p.settings || {};
+  p.settings[key] = parseSetValue(kv.slice(idx + 1));
+}
+
+function applyUnsetOption(p: Profile, key: string): void {
+  if (p.settings) {
+    delete p.settings[key];
+    if (Object.keys(p.settings).length === 0) {
+      delete p.settings;
+    }
+  }
 }
 
 function applyProfileOptions(p: Profile, opts: ProfileOptions): void {
@@ -114,6 +163,12 @@ function applyProfileOptions(p: Profile, opts: ProfileOptions): void {
     validateThinking(opts.thinking);
     p.thinking = opts.thinking;
   }
+  if (opts.set) {
+    for (const kv of opts.set) applySetOption(p, kv);
+  }
+  if (opts.unset) {
+    for (const key of opts.unset) applyUnsetOption(p, key);
+  }
 }
 
 const MODEL_OPTION = "-m, --model <model>";
@@ -121,6 +176,10 @@ const TOKEN_OPTION = "-t, --token <token>";
 const URL_OPTION = "-u, --url <url>";
 const PROVIDER_OPTION = "-p, --provider <id>";
 const THINKING_OPTION = "--thinking <level>";
+const SET_OPTION = "--set <key=value>";
+const UNSET_OPTION = "--unset <key>";
+const SET_DESCRIPTION =
+  "settings.json override (repeatable); value parsed as JSON when possible (e.g. --set foo=null removes foo)";
 
 export function profileCommand(): Command {
   const profile = new Command("profile")
@@ -136,6 +195,8 @@ export function profileCommand(): Command {
     .option(URL_OPTION, "Base URL (works for any provider via models.json override)")
     .option(PROVIDER_OPTION, "pi provider id (e.g. kimi-coding, anthropic, openai)")
     .option(THINKING_OPTION, `Thinking level: ${THINKING_LEVELS.join("|")}`)
+    .option(SET_OPTION, SET_DESCRIPTION, collect, [])
+    .option(UNSET_OPTION, "remove a settings.json override - can be used multiple times", collect, [])
     .action(safeAction((name: string, opts: ProfileOptions) => {
       const models = opts.model && opts.model.length > 0 ? opts.model : undefined;
       if (models && models.length > 3) {
@@ -151,10 +212,19 @@ export function profileCommand(): Command {
       if (models) {
         profile.models = models;
         profile.model = models[0];
-        warnUnknownModels(models);
       }
       applyProfileOptions(profile, opts);
       warnMissingProvider(profile);
+      if (models) {
+        // Materialize first so the catalog check runs against this profile's
+        // agent dir (pi --list-models only lists the default provider's models).
+        try {
+          materializeProfile(name, profile);
+        } catch (err) {
+          logger.debug(`profile add: materialize before model check failed: ${err}`);
+        }
+        warnUnknownModels(models, name);
+      }
 
       data.profiles[name] = profile;
       writeJson(PROFILES_FILE, data, 0o600);
@@ -174,6 +244,8 @@ export function profileCommand(): Command {
     .option(URL_OPTION, "Base URL")
     .option(PROVIDER_OPTION, "pi provider id")
     .option(THINKING_OPTION, `Thinking level: ${THINKING_LEVELS.join("|")}`)
+    .option(SET_OPTION, SET_DESCRIPTION, collect, [])
+    .option(UNSET_OPTION, "remove a settings.json override - can be used multiple times", collect, [])
     .action(safeAction((name: string, opts: ProfileOptions) => {
       ensureProfilesFile();
       const data = readJson<ProfilesData>(PROFILES_FILE);
@@ -236,7 +308,7 @@ export function profileCommand(): Command {
       applyProfileOptions(p, opts);
       warnMissingProvider(p);
       if (providedModels || modelsToDelete) {
-        warnUnknownModels(p.models || (p.model ? [p.model] : []));
+        warnUnknownModels(p.models || (p.model ? [p.model] : []), name);
       }
 
       writeJson(PROFILES_FILE, data, 0o600);
@@ -312,6 +384,12 @@ export function profileCommand(): Command {
         console.log(`Thinking: ${p.thinking || "(default)"}`);
         console.log(`Token:    ${p.token || "(unset)"}`);
         console.log(`URL:      ${p.url || "(default)"}`);
+        if (p.settings && Object.keys(p.settings).length > 0) {
+          console.log(`Settings overrides:`);
+          for (const [key, value] of Object.entries(p.settings)) {
+            console.log(`  ${key} = ${JSON.stringify(value)}`);
+          }
+        }
       }
     }));
 

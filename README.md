@@ -58,7 +58,7 @@ Consequences:
 
 | Subcommand | Description |
 |---|---|
-| `add <name>` | Add or update a profile. Options: `-p/--provider`, `-m/--model` (repeatable, max 3), `-t/--token`, `-u/--url`, `--thinking` |
+| `add <name>` | Add or update a profile. Options: `-p/--provider`, `-m/--model` (repeatable, max 3), `-t/--token`, `-u/--url`, `--thinking`, `--set key=value` (repeatable), `--unset key` (repeatable) |
 | `update <name>` | Update an existing profile. Same options plus `-d/--delete-model` (repeatable) |
 | `list` | Table of profiles (`*` marks the default; tokens masked) |
 | `view <name>` | Full details, token unmasked. `-j/--json` for machine output |
@@ -89,7 +89,11 @@ Launches `pi`. The first argument matching a profile name selects it; otherwise 
       "models": ["kimi-for-coding"],
       "thinking": "high",
       "token": "sk-...",
-      "url": "https://proxy.example.com/coding"
+      "url": "https://proxy.example.com/coding",
+      "settings": {
+        "theme": "dark",
+        "someGlobalHook": null
+      }
     }
   },
   "default": "work"
@@ -97,6 +101,18 @@ Launches `pi`. The first argument matching a profile name selects it; otherwise 
 ```
 
 `"default": "__builtin__"` means "no profile — run plain pi".
+
+### Per-profile settings overrides
+
+Each run, pi-hub regenerates the profile's `settings.json` from your source `~/.pi/agent/settings.json` — hand-edits to the materialized copy are overwritten. To persist per-profile settings, use `--set`/`--unset` (or the `settings` key in `profiles.json`):
+
+```bash
+pi-hub profile update work --set theme=dark --set 'maxTokens=8192' --set someGlobalHook=null
+```
+
+- Values are parsed as JSON when possible (`true`, `8192`, `"quoted"`, `{...}`), otherwise kept as strings.
+- Merged shallowly over the source agent settings; the `provider`/`model`/`thinking` fields still win for their own keys.
+- A `null` value **deletes** the key from the materialized `settings.json` — the way to drop a global setting for one profile.
 
 ## Config path overrides
 

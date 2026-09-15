@@ -5,6 +5,9 @@ export interface Profile {
   thinking?: string;
   token?: string;
   url?: string;
+  /** Arbitrary settings.json overrides, merged over the source agent settings.
+   *  A null value deletes the key from the materialized settings.json. */
+  settings?: Record<string, unknown>;
 }
 
 export interface ProfilesData {

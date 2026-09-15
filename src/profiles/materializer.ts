@@ -69,9 +69,11 @@ export function writeAuthFile(dir: string, profile: Profile): void {
 /**
  * Write <dir>/settings.json: copy of the source agent settings with
  * profile.settings overrides merged in and defaultProvider/defaultModel/
- * defaultThinkingLevel overridden by the profile's dedicated fields
- * (which win for their own keys). A null value in profile.settings deletes
- * the key, so a profile can drop a setting inherited from the agent settings.
+ * defaultThinkingLevel taken solely from the profile's dedicated fields
+ * (which win for their own keys) — these are profile-scoped and are NOT
+ * inherited from the source agent settings, where pi persists the user's
+ * last selection. A null value in profile.settings deletes the key, so a
+ * profile can drop a setting inherited from the agent settings.
  *
  * Keys pi manages at runtime (theme, changelog marker, ...) are taken from
  * the profile dir's existing settings.json instead of the source copy — pi
@@ -103,6 +105,15 @@ const PI_RUNTIME_KEYS = new Set([
 
 export function writeSettingsFile(dir: string, profile: Profile): void {
   const settings = readSourceSettings();
+
+  // Profile-scoped keys: never inherit the source agent settings' values.
+  // pi persists the user's last provider/model/thinking selection into the
+  // active agent dir, so the source copy may carry another profile's (or a
+  // built-in pi session's) defaults. A profile dir carries these keys only
+  // when the profile itself defines them (dedicated fields or settings map).
+  delete settings.defaultProvider;
+  delete settings.defaultModel;
+  delete settings.defaultThinkingLevel;
 
   // Insurance: if the outer ~/.pi/settings.json defines skills and the agent
   // settings don't, carry it over (PI_CODING_AGENT_DIR isolation may hide it).
@@ -180,8 +191,12 @@ function removeStaleLink(linkPath: string): void {
     if (stat.isSymbolicLink() || stat.isFile()) {
       fs.rmSync(linkPath, { force: true });
     } else if (stat.isDirectory()) {
-      // Leftover from a copy fallback on a previous run — leave real data alone
-      logger.debug(`refreshSharedLinks: ${linkPath} is a real directory, leaving as-is`);
+      // Stale copy fallback from a previous run. Leaving it would make every
+      // future run hit EEXIST on the symlink and fall back to copying the whole
+      // source dir again — and the stale copy would shadow the shared source.
+      // The canonical content lives in the source we're about to link.
+      logger.info(`refreshSharedLinks: replacing copied dir with link: ${linkPath}`);
+      fs.rmSync(linkPath, { recursive: true, force: true });
     }
   } catch {
     // does not exist

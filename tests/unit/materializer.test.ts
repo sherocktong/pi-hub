@@ -125,6 +125,33 @@ describe("materializeProfile", () => {
     expect(settings.defaultProvider).toBe("kimi-coding");
   });
 
+  it("does not inherit source defaultProvider/defaultModel/defaultThinkingLevel when the profile lacks them", () => {
+    fs.writeFileSync(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({
+        theme: "dark",
+        defaultProvider: "kimi-coding",
+        defaultModel: "kimi-for-coding",
+        defaultThinkingLevel: "high",
+      })
+    );
+    const dir = mat.materializeProfile("bare", { token: "tok-123" });
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf-8"));
+    expect(settings.theme).toBe("dark");
+    expect(settings.defaultProvider).toBeUndefined();
+    expect(settings.defaultModel).toBeUndefined();
+    expect(settings.defaultThinkingLevel).toBeUndefined();
+  });
+
+  it("lets an explicit profile.settings defaultProvider/defaultModel through", () => {
+    const dir = mat.materializeProfile("custom", {
+      settings: { defaultProvider: "google", defaultModel: "gemini-2.5-pro" },
+    });
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf-8"));
+    expect(settings.defaultProvider).toBe("google");
+    expect(settings.defaultModel).toBe("gemini-2.5-pro");
+  });
+
   it("carries the outer ~/.pi settings.json skills key when agent settings lack it", () => {
     fs.writeFileSync(
       path.join(tmpDir, "settings.json"),
@@ -288,6 +315,23 @@ describe("materializeProfile", () => {
 
     mat.refreshSharedLinks(dir);
     expect(fs.realpathSync(sessionsLink)).toBe(fs.realpathSync(path.join(agentDir, "sessions")));
+  });
+
+  it("replaces a stale copied dir with a symlink on re-materialization", () => {
+    fs.mkdirSync(path.join(agentDir, "sessions"), { recursive: true });
+    fs.writeFileSync(path.join(agentDir, "sessions", "shared.jsonl"), "{}");
+    const dir = mat.materializeProfile("work", baseProfile);
+    // Simulate a leftover from a copy fallback: a real dir instead of a link
+    fs.rmSync(path.join(dir, "sessions"));
+    fs.mkdirSync(path.join(dir, "sessions"));
+    fs.writeFileSync(path.join(dir, "sessions", "stale-copy.jsonl"), "{}");
+
+    mat.refreshSharedLinks(dir);
+    const link = path.join(dir, "sessions");
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.realpathSync(link)).toBe(fs.realpathSync(path.join(agentDir, "sessions")));
+    expect(fs.existsSync(path.join(link, "shared.jsonl"))).toBe(true);
+    expect(fs.existsSync(path.join(link, "stale-copy.jsonl"))).toBe(false);
   });
 
   it("is idempotent", () => {

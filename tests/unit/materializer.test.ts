@@ -218,6 +218,7 @@ describe("materializeProfile", () => {
     existing.lastChangelogVersion = "0.85.1";
     existing.packages = ["npm:old", "npm:new"];
     existing.modelThinkingLevels = { "kimi-coding/kimi-for-coding": "low" };
+    existing.tuiMode = "fullscreen";
     fs.writeFileSync(profileSettings, JSON.stringify(existing));
 
     // Re-materialize: pi-written state must survive, not be reset from source
@@ -225,30 +226,41 @@ describe("materializeProfile", () => {
     const settings = JSON.parse(fs.readFileSync(profileSettings, "utf-8"));
     expect(settings.theme).toBe("claude-code-light/claude-code-dark-ansi");
     expect(settings.lastChangelogVersion).toBe("0.85.1");
-    // packages is not a runtime key: always overwritten from the source settings
+    // packages is the one exception: always overwritten from the source settings
     expect(settings.packages).toEqual(["npm:old"]);
     expect(settings.modelThinkingLevels).toEqual({ "kimi-coding/kimi-for-coding": "low" });
+    expect(settings.tuiMode).toBe("fullscreen");
   });
 
-  it("still tracks source edits for non-runtime keys across re-materialization", () => {
+  it("keeps profile settings over source edits on re-materialization, except packages", () => {
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
-      JSON.stringify({ theme: "dark", statusbar: { enabled: false }, hooks: { Stop: [] } })
+      JSON.stringify({ theme: "dark", statusbar: { enabled: false }, packages: ["npm:a"] })
     );
     const dir = mat.materializeProfile("work", baseProfile);
+    const profileSettings = path.join(dir, "settings.json");
+    const existing = JSON.parse(fs.readFileSync(profileSettings, "utf-8"));
+    existing.theme = "claude-code-dark";
+    existing.statusbar = { enabled: true, preset: "full" };
+    existing.packages = ["npm:a", "npm:b"];
+    existing.customKey = { any: "thing" };
+    fs.writeFileSync(profileSettings, JSON.stringify(existing));
 
-    // User edits a non-runtime key in the source settings
+    // User edits the source settings — the profile file must win
     fs.writeFileSync(
       path.join(agentDir, "settings.json"),
-      JSON.stringify({ theme: "dark", statusbar: { enabled: true, preset: "full" }, hooks: { Stop: [{ x: 1 }] } })
+      JSON.stringify({ theme: "light", statusbar: { enabled: false }, packages: ["npm:a", "npm:c"] })
     );
     mat.materializeProfile("work", baseProfile);
-    const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf-8"));
+    const settings = JSON.parse(fs.readFileSync(profileSettings, "utf-8"));
+    expect(settings.theme).toBe("claude-code-dark");
     expect(settings.statusbar).toEqual({ enabled: true, preset: "full" });
-    expect(settings.hooks).toEqual({ Stop: [{ x: 1 }] });
+    expect(settings.customKey).toEqual({ any: "thing" });
+    // packages keeps tracking the source
+    expect(settings.packages).toEqual(["npm:a", "npm:c"]);
   });
 
-  it("lets profile.settings overrides win over preserved pi runtime keys", () => {
+  it("lets profile.settings overrides win over preserved profile settings", () => {
     const dir = mat.materializeProfile("work", {
       ...baseProfile,
       settings: { theme: "light" },

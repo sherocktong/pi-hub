@@ -75,34 +75,12 @@ export function writeAuthFile(dir: string, profile: Profile): void {
  * last selection. A null value in profile.settings deletes the key, so a
  * profile can drop a setting inherited from the agent settings.
  *
- * Keys pi manages at runtime (theme, changelog marker, ...) are taken from
- * the profile dir's existing settings.json instead of the source copy — pi
- * persists them into the active agent dir, which under a profile is the
- * profile dir, and regenerating purely from the source would wipe that state
- * on every run. All other keys (including `packages`) keep tracking the
- * source so edits there still propagate.
+ * On re-materialization, every key already in the profile's own
+ * settings.json is preserved (pi persists user state there at runtime),
+ * except `packages`, which keeps tracking the source so edits there still
+ * propagate. This makes the profile file the source of truth for anything
+ * pi or the user wrote into it, rather than an allowlist of known keys.
  */
-// Keys pi's SettingsManager persists into the active agent dir at runtime.
-// Keep these from the profile's own settings.json across re-materializations.
-const PI_RUNTIME_KEYS = new Set([
-  "lastChangelogVersion",
-  "theme",
-  "modelThinkingLevels",
-  "steeringMode",
-  "followUpMode",
-  "transport",
-  "httpIdleTimeoutMs",
-  "hideThinkingBlock",
-  "showCacheMissNotices",
-  "shellPath",
-  "quietStartup",
-  "defaultProjectTrust",
-  "shellCommandPrefix",
-  "npmCommand",
-  "collapseChangelog",
-  "enableInstallTelemetry",
-]);
-
 export function writeSettingsFile(dir: string, profile: Profile): void {
   const settings = readSourceSettings();
 
@@ -110,7 +88,8 @@ export function writeSettingsFile(dir: string, profile: Profile): void {
   // pi persists the user's last provider/model/thinking selection into the
   // active agent dir, so the source copy may carry another profile's (or a
   // built-in pi session's) defaults. A profile dir carries these keys only
-  // when the profile itself defines them (dedicated fields or settings map).
+  // when the profile itself defines them (dedicated fields or settings map)
+  // or pi previously wrote them into the profile's own settings.json.
   delete settings.defaultProvider;
   delete settings.defaultModel;
   delete settings.defaultThinkingLevel;
@@ -124,17 +103,17 @@ export function writeSettingsFile(dir: string, profile: Profile): void {
     }
   }
 
-  // Keep per-profile runtime state pi wrote during previous sessions.
+  // Keep everything pi (or the user) wrote into the profile's settings.json
+  // during previous sessions — except `packages`, which tracks the source.
   const profileSettingsFile = path.join(dir, "settings.json");
   if (fs.existsSync(profileSettingsFile)) {
     try {
       const existing = readJson<AgentSettingsData>(profileSettingsFile);
-      for (const key of PI_RUNTIME_KEYS) {
-        if (existing[key] !== undefined) {
-          settings[key] = existing[key];
-        }
+      for (const [key, value] of Object.entries(existing)) {
+        if (key === "packages") continue;
+        settings[key] = value;
       }
-      logger.debug(`writeSettingsFile: preserved pi runtime keys from ${profileSettingsFile}`);
+      logger.debug(`writeSettingsFile: preserved existing keys from ${profileSettingsFile}`);
     } catch (err) {
       logger.warn(`writeSettingsFile: could not read existing ${profileSettingsFile}, regenerating`, err);
     }

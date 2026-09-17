@@ -1,6 +1,6 @@
 {
   "name": "pi-hub-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Manage pi coding agent profiles (provider, model, token, base URL)",
   "type": "module",
   "bin": {

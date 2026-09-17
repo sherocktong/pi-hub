@@ -260,6 +260,33 @@ describe("materializeProfile", () => {
     expect(settings.packages).toEqual(["npm:a", "npm:c"]);
   });
 
+  it("always replicates hooks from the source agent settings", () => {
+    fs.writeFileSync(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({ hooks: { sessionStart: "echo hi" } })
+    );
+    // Even an explicit hooks entry in the profile's settings map must lose.
+    const dir = mat.materializeProfile("work", {
+      ...baseProfile,
+      settings: { hooks: { sessionStart: "echo nope" } },
+    });
+    const profileSettings = path.join(dir, "settings.json");
+    let settings = JSON.parse(fs.readFileSync(profileSettings, "utf-8"));
+    expect(settings.hooks).toEqual({ sessionStart: "echo hi" });
+
+    // A hooks copy written into the profile file (pi runtime or hand edit)
+    // must not shadow later edits to the default settings.json.
+    settings.hooks = { sessionStart: "echo stale" };
+    fs.writeFileSync(profileSettings, JSON.stringify(settings));
+    fs.writeFileSync(
+      path.join(agentDir, "settings.json"),
+      JSON.stringify({ hooks: { sessionStart: "echo updated" } })
+    );
+    mat.materializeProfile("work", baseProfile);
+    settings = JSON.parse(fs.readFileSync(profileSettings, "utf-8"));
+    expect(settings.hooks).toEqual({ sessionStart: "echo updated" });
+  });
+
   it("lets profile.settings overrides win over preserved profile settings", () => {
     const dir = mat.materializeProfile("work", {
       ...baseProfile,

@@ -80,9 +80,18 @@ export function writeAuthFile(dir: string, profile: Profile): void {
  * except `packages`, which keeps tracking the source so edits there still
  * propagate. This makes the profile file the source of truth for anything
  * pi or the user wrote into it, rather than an allowlist of known keys.
+ *
+ * `hooks` is the other exception, in the opposite direction: it always
+ * replicates from the source agent settings, winning over both the profile's
+ * own settings.json and the profile's `settings` map (a `null` there cannot
+ * delete it), so hook edits in the default settings.json reach every profile.
  */
 export function writeSettingsFile(dir: string, profile: Profile): void {
   const settings = readSourceSettings();
+  // Captured before the merges below clobber it: `settings` starts as the
+  // source object, but the preserved-keys loop and the profile's settings map
+  // can overwrite its `hooks` — the source value must be restored at the end.
+  const sourceHooks = settings.hooks;
 
   // Profile-scoped keys: never inherit the source agent settings' values.
   // pi persists the user's last provider/model/thinking selection into the
@@ -127,6 +136,13 @@ export function writeSettingsFile(dir: string, profile: Profile): void {
         settings[key] = value;
       }
     }
+  }
+
+  // `hooks` replicates from the source no matter what the merges above did:
+  // neither a hooks copy preserved from the profile's own settings.json nor
+  // one from the profile's settings map may shadow the default settings.json.
+  if (sourceHooks !== undefined) {
+    settings.hooks = sourceHooks;
   }
 
   const models = profile.models || (profile.model ? [profile.model] : []);
